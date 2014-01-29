@@ -1,0 +1,651 @@
+function [d_area1, d_area2] = imap (xSize, ySize, columnx, columny, columnduration, columnitem, dataset1, dataset2, Ecart_type, maptype, firstfix, backgroundfile, specificfix)
+
+% Sebastien Miellet, Roberto Caldara (2010)
+% miellet@psy.gla.ac.uk
+%
+% imap creates .tif pictures of the single and difference fixation maps merged with a background picture. It displays the significant
+%   areas based on a Pixel-test. It also creates .tif pictures with normalized scales.
+%   It creates .txt files with global eye-tracking measures for both datasets (called eyebasicdataset1.txtx and eyebasicdataset2.txt).
+%   The columns are: the number of fixations, the total fixation duration, the mean fixation duration, the path length and the mean
+%   saccade length). The lines correspond to the raw data files (participants, sessions).
+%   The imap toolbox creates a text file called Zscore.txt that include the
+%   mean Zscores 
+%   It also creates a .txt file with the cohen's d between both datasets for area 1 and 2 (areas in which the fixation durations are
+%   significantly longer for dataset 1 and 2 respectively). The file is called cohend.txt
+%   Finally, imap creates .txt files with the eye-tracking data in both the significant areas and the rest of the picture. The files are
+%   called eyeareadataset1.txt and eyeareadataset2.txt and are organised the following way: mean fixation duration for area 1 then for
+%   area 2 then for the rest of the picture. In the same way are path length, total fixation duration and number of fixations.
+%
+% The entrance data is a matrix with a fixation per line. The only crucial data are the coordinates and duration of the fixations and the
+%   item numbers. Any other column can be use for specifying your conditions.
+%
+% The data in this example are in .mat files (called data1.mat, data2.mat,...), the matrices are called "summary". This can be obtained
+%   from any txt file (e.g. fixation report from EyeLink® Data Viewer)
+%
+% VARIABLES
+% xSize and ySize: stimulus size (e.g. 382, 390)
+% columnx, columny, columnduration, columnitem: specify the column number for x, y coordinates, fixation durations and item number.
+%   This allows flexible data format
+% datasets 1 and 2: for instance with this data [1:20], [21:40] Western Caucasian vs East Asian participants (WC and EA faces stimuli
+%   for both groups) or [1:10], [11:20] WC participants, EA vs WC stimuli. The second data set is optional, leave empty if you do not specify
+%   Ecart-type and backgroundfile, set to [] if you want to specify the two last parameters
+% Ecart-type: Standard deviation in pixels for the gaussian used during the smoothing. The default value is 10 pixels. Set to 10 if you want
+%   to specify a background picture
+% maptype: 1 for fixation duration maps, 2 for number of fixations maps. Default value is 1.
+% firstfix: This option allows to ignore the first fixation of each trial. That can be usefull if your stimuli are centered and you present a central
+%    fixation cross before the trials. 1 (default option) keeps all the fixations, 2 ignores the first fixation of each trial. 
+% backgroundfile: e.g. 'visageCaucasInv.tif'. This value is optional.
+% specificfix: To selct one or several specific fixations. e.g. [3 3] or [1 3]. This value is optional. If you want to use this option without any 
+% background picture, set the backgroundfile value to 0.
+%
+% HOW TO USE IT
+% Launch the function with the variables.
+% e.g. imap ( 382, 390, 6, 7, 5, 1, [1:20], [21:40], 10, 1, 'visageCaucasInv.tif')
+% When the difference map stays on the screen, maximize it then click on the top-left corner then botom-right then "enter"
+%
+% CREDITS
+% Exportfig was written by Ben Hinkle, 2001 (bhinkle@mathworks.com)
+%
+% CiVol and HalfMax are part of the Stat4Ci toolbox, which allows to perform the Pixel and the Cluster tests, both based on Random Field
+%   Theory. These tests are easy to apply, requiring a mere four pieces of information; and they typically produce statistical thresholds
+%   (or p-values) lower than the standard Bonferroni correction. An excellent non-technical reference is: K. J. Worsley (1996) the geometry
+%   of random image. Chance, 9, 27-40.
+%
+% The STAT_THRESHOLD function was written by Keith Worsley for the fmristat toolbox (http://www.math.mcgill.ca/~keith/fmristat);
+%   K.J. Worsley, 2003 (keith.worsley@mcgill.ca , www.math.mcgill.ca/keith)
+%
+% The Stat4Ci toolbox is free (http://mapageweb.umontreal.ca/gosselif/stat4ci.html); if you use it in your research, please, cite :
+%   Chauvin, A., Worsley, K. J., Schyns, P. G., Arguin, M. & Gosselin, F. (2004).  A sensitive statistical test for smooth classification images.
+%   (http://journalofvision.org/5/9/1/)
+
+%% 1 or 2 dataset
+numberofdataset=2;
+if nargin==13
+    firstfix=specificfix(1);
+elseif nargin==10
+    firstfix=1;
+elseif nargin==9
+    firstfix=1;
+    maptype=1;
+elseif nargin==8
+    Ecart_type=10;
+    firstfix=1;
+    maptype=1;
+elseif nargin==7
+    Ecart_type=10;
+    maptype=1;
+    firstfix=1;
+    dataset2=[];
+    numberofdataset=1;
+elseif nargin<7
+    error('MATLAB:imap:Nargin','Requires more arguments.');
+end
+if isempty(dataset2)
+    numberofdataset=1;
+end
+
+%% Global eye-tracking measures for each dataset
+datatotal=[dataset1 dataset2];
+for datasetnb=1:numberofdataset
+    if datasetnb==1
+        dataset=dataset1;
+        datasetname='dataset1';
+    elseif datasetnb==2
+        dataset=dataset2;
+        datasetname='dataset2';
+    end
+
+    nbfixtrial=[];
+    totalfixdur=[];
+    meanfixdur=[];
+    pathlength=[];
+    meansacclength=[];
+
+    for datafilenumber=1:length(dataset)
+        summary=[];
+        datatoload=['data' num2str(dataset(datafilenumber))];
+        load(datatoload); % The name of the matrix is 'summary'
+        [nbfix nbvariables]=size(summary);
+        cumulfixdur=[];
+        cumulsaccadelength=[];
+        numfix=[];
+        cumulfixdur(1)=summary(1,columnduration);
+        cumulsaccadelength(1)=0;
+        numfix(1)=1;
+        trialnb=0;
+        for fix=2:nbfix
+            if summary(fix,columnitem)==summary(fix-1,columnitem)
+                numfix(fix)=numfix(fix-1)+1;
+                cumulfixdur(fix)=cumulfixdur(fix-1)+summary(fix,columnduration);
+                cumulsaccadelength(fix)=cumulsaccadelength(fix-1)+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+            elseif summary(fix,columnitem)~=summary(fix-1,columnitem)
+                trialnb=trialnb+1;
+                nbfixtrial(trialnb,datafilenumber)=numfix(fix-1);
+                totalfixdur(trialnb,datafilenumber)=cumulfixdur(fix-1);
+                meanfixdur(trialnb,datafilenumber)=cumulfixdur(fix-1)/numfix(fix-1);
+                pathlength(trialnb,datafilenumber)=cumulsaccadelength(fix-1);
+                meansacclength(trialnb,datafilenumber)=cumulsaccadelength(fix-1)/numfix(fix-1);
+
+                cumulfixdur(fix)=summary(fix,columnduration);
+                cumulsaccadelength(fix)=0;
+                numfix(fix)=1;
+            end
+        end
+        trialnb=trialnb+1;
+        nbfixtrial(trialnb,datafilenumber)=numfix(fix);
+        totalfixdur(trialnb,datafilenumber)=cumulfixdur(fix);
+        meanfixdur(trialnb,datafilenumber)=cumulfixdur(fix)/numfix(fix);
+        pathlength(trialnb,datafilenumber)=cumulsaccadelength(fix);
+        meansacclength(trialnb,datafilenumber)=cumulsaccadelength(fix)/numfix(fix);
+    end
+
+    nbfixsbj=(nanmean(nbfixtrial))';
+    totalfixdursbj=(nanmean(totalfixdur))';
+    meanfixdursbj=(nanmean(meanfixdur))';
+    pathlengthsbj=(nanmean(pathlength))';
+    meansacclengthsbj=(nanmean(meansacclength))';
+
+    if datasetnb==1
+        eyebasicdataset1=[nbfixsbj totalfixdursbj meanfixdursbj pathlengthsbj meansacclengthsbj];
+        dlmwrite('eyebasicdataset1.txt', eyebasicdataset1, 'delimiter', '\t', 'precision', 7);
+        nbfixsbj=[];
+        totalfixdursbj=[];
+        meanfixdursbj=[];
+        pathlengthsbj=[];
+        meansacclengthsbj=[];
+    elseif datasetnb==2
+        eyebasicdataset2=[nbfixsbj totalfixdursbj meanfixdursbj pathlengthsbj meansacclengthsbj];
+        dlmwrite('eyebasicdataset2.txt', eyebasicdataset2, 'delimiter', '\t', 'precision', 7);
+        nbfixsbj=[];
+        totalfixdursbj=[];
+        meanfixdursbj=[];
+        pathlengthsbj=[];
+        meansacclengthsbj=[];
+    end
+end
+
+%% Descriptive fixation maps
+for datafilenumber=1:length(datatotal)
+    summary=[];
+
+    % POINTS step: Creating a matrix x by y (stimulus size) with the cumulated fixation
+    % durations for each pixel
+      datatoload=['data' num2str(datatotal(datafilenumber))];
+    load(datatoload); % The name of the matrix is 'summary'
+    [nbfix nbvariables]=size(summary);
+    if nargin==13
+        nbfix=specificfix(2);
+    end
+    
+    matrixduration = zeros(xSize, ySize);
+    for fix=firstfix:nbfix
+        if firstfix==2
+            if summary(fix, columnitem)==summary(fix-1, columnitem)
+                coordX = round(summary(fix, columny)); % here we swap x and y (difference between screen coordinates and matrix [first number=lines, second=columns])
+                coordY = round(summary(fix, columnx));
+                if coordX<xSize && coordY<ySize && coordX>0 && coordY>0 % In this example, we consider only the fixations on the stimulus
+                    if maptype==1
+                        matrixduration(coordX, coordY) = matrixduration(coordX, coordY) + summary(fix, columnduration);
+                    elseif maptype==2
+                        matrixduration(coordX, coordY) = matrixduration(coordX, coordY) + 1;
+                    end
+                end
+            end
+        elseif firstfix==1
+            coordX = round(summary(fix, columny)); % here we swap x and y (difference between screen coordinates and matrix [first number=lines, second=columns])
+            coordY = round(summary(fix, columnx));
+            if coordX<xSize && coordY<ySize && coordX>0 && coordY>0 % In this example, we consider only the fixations on the stimulus
+                if maptype==1
+                    matrixduration(coordX, coordY) = matrixduration(coordX, coordY) + summary(fix, columnduration);
+                elseif maptype==2
+                    matrixduration(coordX, coordY) = matrixduration(coordX, coordY) + 1;
+                end
+            end
+        end
+    end
+
+    % SMOOTHING step
+    [x, y] = meshgrid(-floor(ySize/2)+.5:floor(ySize/2)-.5, -floor(xSize/2)+.5:floor(xSize/2)-.5);
+    gaussienne = exp(- (x .^2 / Ecart_type ^2) - (y .^2 / Ecart_type ^2));
+    gaussienne = (gaussienne - min(gaussienne(:))) / (max(gaussienne(:)) - min(gaussienne(:)));
+    f_fil = fft2(gaussienne);
+    f_mat = fft2(matrixduration); % 2D fourrier transform on the points matrix
+    filtered_mat = f_mat .* f_fil;
+    smoothpic = real(fftshift(ifft2(filtered_mat))); % take the real part of the complex values from the fourier transform
+    nametosave=['data' num2str(datatotal(datafilenumber)) 'smoothpic'];
+    save(nametosave, 'smoothpic');
+end
+clear filtered_mat f_mat f_fil x y smoothpic gaussienne;
+
+%% Statistics
+% Pool the maps for each dataset
+for datasetnb=1:numberofdataset
+    if datasetnb==1
+        dataset=dataset1;
+    elseif datasetnb==2
+        dataset=dataset2;
+    end
+    pooldata = zeros(xSize, ySize);
+    for ii=1:length(dataset)
+        nametoload=['data' int2str(dataset(ii)) 'smoothpic'];
+        load(nametoload);
+        pooldata=smoothpic+pooldata;
+    end
+
+    % Normalizing the data
+    theMean = mean(pooldata(:));
+    stdev = std(pooldata(:));
+    Zsmooth=(pooldata - theMean)/stdev;
+
+    if datasetnb==1
+        dataset1map=Zsmooth;
+    elseif datasetnb==2
+        dataset2map=Zsmooth;
+    end
+end
+
+% If there are 2 datasets
+% Compute the difference matrices, between the groups in this example but
+% it can be done between conditions as well
+if isempty(dataset2)==0
+    diffmap=dataset1map-dataset2map;
+    theMean = mean(diffmap(:));
+    stdev = std(diffmap(:));
+    Zdiffmap=(diffmap - theMean)/stdev;
+end
+
+%*****************
+% Pixel test
+%*****************
+% for details see Chauvin, A., Worsley, K. J., Schyns, P. G., Arguin, M. &
+% Gosselin, F. (2004).  A sensitive statistical test for smooth
+% classification images.
+area2 = ones(xSize, ySize, 1);
+% calculation of the significant values for single matrix
+sigma = 10;
+sigma2=1;
+p=.05;	% desired p-value (Voxel test)
+tC= 1.7;	% threshold for 2D image (other test)
+D = length(size(area2)); % number of dimensions in the search space
+FWHM=HalfMax(sigma);% computes the full width half maximum
+ft = HalfMax(sigma2);
+[volumes,N]=CiVol(sum(area2(:))/FWHM/FWHM/ft,D); % (Worsley et al. 1996, HBM) computes the intrinsic volumes
+[tP1,k]=stat_threshold(volumes, round(N),1,Inf,p,tC,p); % the actual statistical tests
+% for the differences
+sigma = 10;
+sigma2=1;
+p=.025;	% desired p-value (Voxel test)
+tC= 1.7;	% threshold for 2D image (other test)
+D = length(size(area2)); % number of dimensions in the search space
+FWHM=HalfMax(sigma);% computes the full width half maximum
+ft = HalfMax(sigma2);
+[volumes,N]=CiVol(sum(area2(:))/FWHM/FWHM/ft,D); % (Worsley et al. 1996, HBM) computes the intrinsic volumes
+[tP2,k]=stat_threshold(volumes, round(N),1,Inf,p,tC,p);
+% Find the significant area in the single maps
+Seuildataset1Sup = gt(dataset1map, tP1);
+Seuildataset1Inf = lt(dataset1map, -tP1);
+mask_dataset1=dataset1map.*Seuildataset1Sup;
+Zscore_dataset1=sum(sum(mask_dataset1))/length(find(mask_dataset1~=0));
+SeuilEdgeDataset1Sup = edge(double(Seuildataset1Sup),'canny',[0.01 0.11], 2);
+SeuilEdgeDataset1Inf = edge(double(Seuildataset1Inf),'canny',[0.01 0.11], 2);
+% If there are 2 datasets
+if isempty(dataset2)==0
+    Seuildataset2Sup = gt(dataset2map, tP1);
+    Seuildataset2Inf = lt(dataset2map, -tP1);
+    mask_dataset2=dataset2map.*Seuildataset2Sup;
+    Zscore_dataset2=sum(sum(mask_dataset2))/length(find(mask_dataset2~=0));
+    SeuilEdgeDataset2Sup = edge(double(Seuildataset2Sup),'canny',[0.01 0.11], 2);
+    SeuilEdgeDataset2Inf = edge(double(Seuildataset2Inf),'canny',[0.01 0.11], 2);
+    
+    % Find the significant area in the difference map
+    SeuilZDiffmapSup = gt(Zdiffmap, tP2);
+    SeuilZDiffmapInf = lt(Zdiffmap, -tP2);
+    mask_dataset1_area1=dataset1map.*SeuilZDiffmapSup;
+    mask_dataset1_area2=dataset1map.*SeuilZDiffmapInf;
+    mask_dataset2_area1=dataset2map.*SeuilZDiffmapSup;
+    mask_dataset2_area2=dataset2map.*SeuilZDiffmapInf;
+    Zscore_dataset1_area1=sum(sum(mask_dataset1_area1))/length(find(mask_dataset1_area1~=0));
+    Zscore_dataset1_area2=sum(sum(mask_dataset1_area2))/length(find(mask_dataset1_area2~=0));
+    Zscore_dataset2_area1=sum(sum(mask_dataset2_area1))/length(find(mask_dataset2_area1~=0));
+    Zscore_dataset2_area2=sum(sum(mask_dataset2_area2))/length(find(mask_dataset2_area2~=0));
+    SeuilEdgeDiffSup = edge(double(SeuilZDiffmapSup),'canny',[0.01 0.11], 2);
+    SeuilEdgeDiffInf = edge(double(SeuilZDiffmapInf),'canny',[0.01 0.11], 2);
+    for ll=1:2
+        countstdZ=0;
+        for kk=1:2
+            if kk==1
+                poolstdZ=dataset1map;
+            elseif kk==2
+                poolstdZ=dataset2map;
+            end
+            for ii=1:xSize
+                for jj=1:ySize
+                    if ll==1
+                        if SeuilZDiffmapSup(ii,jj)~=0
+                            countstdZ=countstdZ+1;
+                            tempstdZ_area1(countstdZ)=poolstdZ(ii,jj);
+                        end
+                    elseif ll==2
+                        if SeuilZDiffmapInf(ii,jj)~=0
+                            countstdZ=countstdZ+1;
+                            tempstdZ_area2(countstdZ)=poolstdZ(ii,jj);
+                        end
+                    end
+                end
+            end
+        end
+    end 
+    d_area1=(Zscore_dataset1_area1-Zscore_dataset2_area1)/std(tempstdZ_area1);
+    d_area2=(Zscore_dataset1_area2-Zscore_dataset2_area2)/std(tempstdZ_area2);
+    Zscore=[Zscore_dataset1 Zscore_dataset2 Zscore_dataset1_area1 Zscore_dataset1_area2 Zscore_dataset2_area1 Zscore_dataset2_area2];
+    dlmwrite('Zscore.txt', Zscore, 'delimiter', '\t', 'precision', 7);
+    cohend=[d_area1 d_area2];
+    dlmwrite('cohend.txt', cohend, 'delimiter', '\t', 'precision', 7);
+end
+
+%% make figure with background (is specified) and significant areas
+% export the single and difference maps in tiff format
+figure, imagesc(dataset1map), colorbar
+exportfig(gcf, 'dataset1map', 'Format', 'tiff', 'FontMode','fixed','FontSize', 10, 'color', 'cmyk' );
+close(gcf);
+dataset1pic = double(imread(sprintf('dataset1map.tif')))/255;
+
+if isempty(dataset2)==0
+    figure, imagesc(dataset2map), colorbar
+    exportfig(gcf, 'dataset2map', 'Format', 'tiff', 'FontMode','fixed','FontSize', 10, 'color', 'cmyk' );
+    close(gcf);
+    figure, imagesc(Zdiffmap), colorbar
+    exportfig(gcf, 'Zdiffmap', 'Format', 'tiff', 'FontMode','fixed','FontSize', 10, 'color', 'cmyk' );
+    close(gcf);
+    diffpic = double(imread(sprintf('Zdiffmap.tif')))/255;
+    dataset2pic = double(imread(sprintf('dataset2map.tif')))/255;
+end
+
+% get coordinates of the maps
+imshow(dataset1pic);
+[xx yy] = getpts;
+close(gcf);
+% keep only the map areas and resize
+dataset1pic = dataset1pic(round(yy(1)):round(yy(2)), round(xx(1)):round(xx(2)),:);
+dataset1pic = imresize(dataset1pic, [xSize ySize]);
+if isempty(dataset2)==0
+    diffpic = diffpic(round(yy(1)):round(yy(2)), round(xx(1)):round(xx(2)),:);
+    diffpic = imresize(diffpic, [xSize ySize]);
+    dataset2pic = dataset2pic(round(yy(1)):round(yy(2)), round(xx(1)):round(xx(2)),:);
+    dataset2pic = imresize(dataset2pic, [xSize ySize]);
+end
+
+% add background if a background picture is specified
+if nargin>=12
+    if backgroundfile==0
+        dataset1pic2 = dataset1pic;
+        if isempty(dataset2)==0
+            dataset2pic2 = dataset2pic;
+            diffpic2 = diffpic;
+        end
+    else
+        % open the background picture
+        imbackground = double(imread(sprintf(backgroundfile)))/255;
+        % add maps to background
+        if ndims(imbackground)==2
+            im3D = zeros(xSize, ySize, 3);
+            im3D(:, :, 1) = imbackground;
+            im3D(:, :, 2) = imbackground;
+            im3D(:, :, 3) = imbackground;
+        elseif ndims(imbackground)==3
+            im3D = zeros(xSize, ySize, 3);
+            im3D(:, :, 1) = imbackground(:, :, 1);
+            im3D(:, :, 2) = imbackground(:, :, 2);
+            im3D(:, :, 3) = imbackground(:, :, 3);
+        end
+        dataset1pic2 = im3D * .3 + dataset1pic * .7;
+        if isempty(dataset2)==0
+            diffpic2 = im3D * .3 + diffpic * .7;
+            dataset2pic2 = im3D * .3 + dataset2pic * .7;
+        end
+    end
+elseif nargin<12
+    dataset1pic2 = dataset1pic;
+    if isempty(dataset2)==0
+        dataset2pic2 = dataset2pic;
+        diffpic2 = diffpic;
+    end
+end
+
+% add contour for the significant areas and save
+imSeuilEdge3D = zeros(xSize, ySize, 3);
+imSeuilEdge3D(:, :, 1) = SeuilEdgeDataset1Inf;
+imSeuilEdge3D(:, :, 2) = SeuilEdgeDataset1Sup;
+imSeuilEdge3D(:, :, 3) = SeuilEdgeDataset1Sup;
+dataset1picedge= (dataset1pic2 + imSeuilEdge3D).*255;
+name = sprintf('dataset1picedge.tiff');
+imwrite(uint8(dataset1picedge), name)
+if isempty(dataset2)==0
+    imSeuilEdge3D = zeros(xSize, ySize, 3);
+    imSeuilEdge3D(:, :, 1) = SeuilEdgeDiffInf;
+    imSeuilEdge3D(:, :, 2) = SeuilEdgeDiffSup;
+    imSeuilEdge3D(:, :, 3) = SeuilEdgeDiffSup;
+    diffpicedge= (diffpic2 + imSeuilEdge3D).*255;
+    name = sprintf('diffpicedge.tiff');
+    imwrite(uint8(diffpicedge), name)
+    imSeuilEdge3D = zeros(xSize, ySize, 3);
+    imSeuilEdge3D(:, :, 1) = SeuilEdgeDataset2Inf;
+    imSeuilEdge3D(:, :, 2) = SeuilEdgeDataset2Sup;
+    imSeuilEdge3D(:, :, 3) = SeuilEdgeDataset2Sup;
+    dataset2picedge= (dataset2pic2 + imSeuilEdge3D).*255;
+    name = sprintf('dataset2picedge.tiff');
+    imwrite(uint8(dataset2picedge), name)
+end
+
+%% Effect sizes & eye-tracking measures in the significant areas
+% Compute the cohen's d (using pooled variance) for each of the areas significantly different between
+% datasets (according to the difference matrix)
+
+if isempty(dataset2)==0
+    % number of significant pixels in single and difference matrices
+    nbpixeltotal=xSize*ySize;
+    nbsignifpixelarea1=sum(sum(SeuilZDiffmapSup));
+    nbsignifpixelarea2=sum(sum(SeuilZDiffmapInf));
+    nbpixelother=nbpixeltotal-nbsignifpixelarea1-nbsignifpixelarea2;
+
+    for datafilenumber=1:length(datatotal)
+        summary=[];
+        durationarea1=[];
+        durationarea2=[];
+        meanfixdurarea1=[];
+        meanfixdurarea2=[];
+        meanfixdurrest=[];
+        pathlengtharea1=[];
+        pathlengtharea2=[];
+        pathlenthrest=[];
+        totfixdurarea1=[];
+        totfixdurarea2=[];
+        totfixdurrest=[];
+        numfixarea1=[];
+        numfixarea2=[];
+        numfixrest=[];
+
+        datatoload=['data' num2str(datatotal(datafilenumber))];
+        load(datatoload); % The name of the matrix is 'summary'
+        [nbfix nbvariables]=size(summary);
+
+        nbitem=0;
+        nbfixarea1=0;
+        nbfixarea2=0;
+        nbfixrest=0;
+        cumuldurationarea1=0;
+        cumuldurationarea2=0;
+        cumuldurationrest=0;
+        cumulsaccadearea1=0;
+        cumulsaccadearea2=0;
+        cumulsaccaderest=0;
+        coordX = round(summary(1, columny));
+        coordY = round(summary(1, columnx));
+        if coordX<xSize && coordY<ySize && coordX>0 && coordY>0
+            if SeuilZDiffmapSup(coordX(1),coordY(1))~=0
+                cumuldurationarea1= cumuldurationarea1+ summary(1, columnduration);
+                nbfixarea1=nbfixarea1+1;
+            elseif SeuilZDiffmapInf(coordX(1),coordY(1))~=0
+                cumuldurationarea2= cumuldurationarea2+ summary(1, columnduration);
+                nbfixarea2=nbfixarea2+1;
+            else
+                cumuldurationrest=cumuldurationrest+summary(1, columnduration);
+                nbfixrest=nbfixrest+1;
+            end
+        end
+        for fix=2:nbfix
+            coordX = round(summary(fix, columny)); % here we swap x and y (difference between screen coordinates and matrix [first number=lines, second=columns])
+            coordY = round(summary(fix, columnx));
+
+            if coordX>0 && coordY>0 && coordX<xSize && coordY<ySize
+                if summary(fix,columnitem)==summary(fix-1,columnitem)
+                    if SeuilZDiffmapSup(coordX,coordY)~=0
+                        cumuldurationarea1= cumuldurationarea1+ summary(fix, columnduration);
+                        nbfixarea1=nbfixarea1+1;
+                        cumulsaccadearea1=cumulsaccadearea1+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+                    elseif SeuilZDiffmapInf(coordX,coordY)~=0
+                        cumuldurationarea2= cumuldurationarea2+ summary(fix, columnduration);
+                        nbfixarea2=nbfixarea2+1;
+                        cumulsaccadearea2=cumulsaccadearea2+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+                    else
+                        cumuldurationrest=cumuldurationrest+summary(fix, columnduration);
+                        nbfixrest=nbfixrest+1;
+                        cumulsaccaderest=cumulsaccaderest+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+                    end
+                elseif summary(fix,columnitem)~=summary(fix-1,columnitem)
+                    nbitem=nbitem+1;
+                    meanfixdurarea1(nbitem)=cumuldurationarea1/nbfixarea1;
+                    meanfixdurarea2(nbitem)=cumuldurationarea2/nbfixarea2;
+                    meanfixdurrest(nbitem)=cumuldurationrest/nbfixrest;
+                    pathlengtharea1(nbitem)=cumulsaccadearea1;
+                    pathlengtharea2(nbitem)=cumulsaccadearea2;
+                    pathlenthrest(nbitem)=cumulsaccaderest;
+                    totfixdurarea1(nbitem)=cumuldurationarea1;
+                    totfixdurarea2(nbitem)=cumuldurationarea2;
+                    totfixdurrest(nbitem)=cumuldurationrest;
+                    numfixarea1(nbitem)=nbfixarea1;
+                    numfixarea2(nbitem)=nbfixarea2;
+                    numfixrest(nbitem)=nbfixrest;
+
+                    nbfixarea1=0;
+                    nbfixarea2=0;
+                    nbfixrest=0;
+                    cumuldurationarea1=0;
+                    cumuldurationarea2=0;
+                    cumuldurationrest=0;
+                    cumulsaccadearea1=0;
+                    cumulsaccadearea2=0;
+                    cumulsaccaderest=0;
+                    coordX = round(summary(1, columny));
+                    coordY = round(summary(1, columnx));
+                    if coordX>0 && coordY>0 && coordX<xSize && coordY<ySize
+                        if SeuilZDiffmapSup(coordX,coordY)~=0
+                            cumuldurationarea1= cumuldurationarea1+ summary(fix, columnduration);
+                            nbfixarea1=nbfixarea1+1;
+                        elseif SeuilZDiffmapInf(coordX,coordY)~=0
+                            cumuldurationarea2= cumuldurationarea2+ summary(fix, columnduration);
+                            nbfixarea2=nbfixarea2+1;
+                        else
+                            cumuldurationrest=cumuldurationrest+summary(fix, columnduration);
+                            nbfixrest=nbfixrest+1;
+                        end
+                    end
+                end
+            end
+        end
+
+        coordX = round(summary(fix, columny));
+        coordY = round(summary(fix, columnx));
+        if coordX>0 && coordY>0 && coordX<xSize && coordY<ySize
+            if SeuilZDiffmapSup(coordX,coordY)~=0
+                cumuldurationarea1= cumuldurationarea1+ summary(fix, columnduration);
+                nbfixarea1=nbfixarea1+1;
+                cumulsaccadearea1=cumulsaccadearea1+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+            elseif SeuilZDiffmapInf(coordX,coordY)~=0
+                cumuldurationarea2= cumuldurationarea2+ summary(fix, columnduration);
+                nbfixarea2=nbfixarea2+1;
+                cumulsaccadearea2=cumulsaccadearea2+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+            else
+                cumuldurationrest=cumuldurationrest+summary(fix, columnduration);
+                nbfixrest=nbfixrest+1;
+                cumulsaccaderest=cumulsaccaderest+sqrt((summary(fix,columnx)-summary(fix-1,columnx)).^2+(summary(fix,columny)-summary(fix-1,columny)).^2);
+            end
+        end
+
+        nbitem=nbitem+1;
+        meanfixdurarea1(nbitem)=cumuldurationarea1/nbfixarea1;
+        meanfixdurarea2(nbitem)=cumuldurationarea2/nbfixarea2;
+        meanfixdurrest(nbitem)=cumuldurationrest/nbfixrest;
+        pathlengtharea1(nbitem)=cumulsaccadearea1;
+        pathlengtharea2(nbitem)=cumulsaccadearea2;
+        pathlengthrest(nbitem)=cumulsaccaderest;
+        totfixdurarea1(nbitem)=cumuldurationarea1;
+        totfixdurarea2(nbitem)=cumuldurationarea2;
+        totfixdurrest(nbitem)=cumuldurationrest;
+        numfixarea1(nbitem)=nbfixarea1;
+        numfixarea2(nbitem)=nbfixarea2;
+        numfixrest(nbitem)=nbfixrest;
+
+        mediandurationarea1(datafilenumber)=nanmedian(meanfixdurarea1);
+        mediandurationarea2(datafilenumber)=nanmedian(meanfixdurarea2);
+        mediandurationrest(datafilenumber)=nanmedian(meanfixdurrest);
+        totalduration(datafilenumber)=mediandurationarea1(datafilenumber)+mediandurationarea2(datafilenumber)+mediandurationrest(datafilenumber);
+        relativedurationarea1(datafilenumber)=(mediandurationarea1(datafilenumber)/nbsignifpixelarea1)/(totalduration(datafilenumber)/nbpixeltotal);
+        relativedurationarea2(datafilenumber)=(mediandurationarea2(datafilenumber)/nbsignifpixelarea2)/(totalduration(datafilenumber)/nbpixeltotal);
+        relativedurationrest(datafilenumber)=(mediandurationrest(datafilenumber)/nbpixelother)/(totalduration(datafilenumber)/nbpixeltotal);
+
+        fixdurarea1sbj(datafilenumber)=nanmean(meanfixdurarea1');
+        fixdurarea2sbj(datafilenumber)=nanmean(meanfixdurarea2');
+        fixdurrestsbj(datafilenumber)=nanmean(meanfixdurrest');
+        pathlengtharea1sbj(datafilenumber)=nanmean(pathlengtharea1');
+        pathlengtharea2sbj(datafilenumber)=nanmean(pathlengtharea2');
+        pathlengthrestsbj(datafilenumber)=nanmean(pathlengthrest');
+        totfixdurarea1sbj(datafilenumber)=nanmean(totfixdurarea1');
+        totfixdurarea2sbj(datafilenumber)=nanmean(totfixdurarea2');
+        totfixdurrestsbj(datafilenumber)=nanmean(totfixdurrest');
+        numfixarea1sbj(datafilenumber)=nanmean(numfixarea1');
+        numfixarea2sbj(datafilenumber)=nanmean(numfixarea2');
+        numfixrestsbj(datafilenumber)=nanmean(numfixrest');
+
+    end
+
+    nbdatapointdataset1=1;
+    nbdatapointdataset2=1;
+    for ii=1:length(datatotal)
+        if ismember(datatotal(ii),dataset1)
+            fixdurarea1dataset1(nbdatapointdataset1)=fixdurarea1sbj(ii);
+            fixdurarea2dataset1(nbdatapointdataset1)=fixdurarea2sbj(ii);
+            fixdurrestdataset1(nbdatapointdataset1)=fixdurrestsbj(ii);
+            pathlengtharea1dataset1(nbdatapointdataset1)=pathlengtharea1sbj(ii);
+            pathlengtharea2dataset1(nbdatapointdataset1)=pathlengtharea2sbj(ii);
+            pathlengthrestdataset1(nbdatapointdataset1)=pathlengthrestsbj(ii);
+            totfixdurarea1dataset1(nbdatapointdataset1)=totfixdurarea1sbj(ii);
+            totfixdurarea2dataset1(nbdatapointdataset1)=totfixdurarea2sbj(ii);
+            totfixdurrestdataset1(nbdatapointdataset1)=totfixdurrestsbj(ii);
+            numfixarea1dataset1(nbdatapointdataset1)=numfixarea1sbj(ii);
+            numfixarea2dataset1(nbdatapointdataset1)=numfixarea2sbj(ii);
+            numfixrestdataset1(nbdatapointdataset1)=numfixrestsbj(ii);
+            nbdatapointdataset1=nbdatapointdataset1+1;
+
+        elseif ismember(datatotal(ii),dataset2)
+            fixdurarea1dataset2(nbdatapointdataset2)=fixdurarea1sbj(ii);
+            fixdurarea2dataset2(nbdatapointdataset2)=fixdurarea2sbj(ii);
+            fixdurrestdataset2(nbdatapointdataset2)=fixdurrestsbj(ii);
+            pathlengtharea1dataset2(nbdatapointdataset2)=pathlengtharea1sbj(ii);
+            pathlengtharea2dataset2(nbdatapointdataset2)=pathlengtharea2sbj(ii);
+            pathlengthrestdataset2(nbdatapointdataset2)=pathlengthrestsbj(ii);
+            totfixdurarea1dataset2(nbdatapointdataset2)=totfixdurarea1sbj(ii);
+            totfixdurarea2dataset2(nbdatapointdataset2)=totfixdurarea2sbj(ii);
+            totfixdurrestdataset2(nbdatapointdataset2)=totfixdurrestsbj(ii);
+            numfixarea1dataset2(nbdatapointdataset2)=numfixarea1sbj(ii);
+            numfixarea2dataset2(nbdatapointdataset2)=numfixarea2sbj(ii);
+            numfixrestdataset2(nbdatapointdataset2)=numfixrestsbj(ii);
+            nbdatapointdataset2=nbdatapointdataset2+1;
+
+        end
+    end
+    eyeareadataset1=[fixdurarea1dataset1' fixdurarea2dataset1' fixdurrestdataset1' pathlengtharea1dataset1' pathlengtharea2dataset1' pathlengthrestdataset1' totfixdurarea1dataset1' totfixdurarea2dataset1' totfixdurrestdataset1' numfixarea1dataset1' numfixarea2dataset1' numfixrestdataset1'];
+    eyeareadataset2=[fixdurarea1dataset2' fixdurarea2dataset2' fixdurrestdataset2' pathlengtharea1dataset2' pathlengtharea2dataset2' pathlengthrestdataset2' totfixdurarea1dataset2' totfixdurarea2dataset2' totfixdurrestdataset2' numfixarea1dataset2' numfixarea2dataset2' numfixrestdataset2'];
+    dlmwrite('eyeareadataset1.txt', eyeareadataset1, 'delimiter', '\t', 'precision', 7);
+    dlmwrite('eyeareadataset2.txt', eyeareadataset2, 'delimiter', '\t', 'precision', 7);
+end
